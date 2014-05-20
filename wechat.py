@@ -1,8 +1,11 @@
+# -*- coding: UTF-8 -*-
+import time
 import json
 import hashlib
 import logging
 import tornado.web
 import tornado.gen
+import xml.etree.ElementTree as ET
 from app import BaseHandler
 from datetime import datetime, timedelta
 from tornado.concurrent import return_future
@@ -66,6 +69,19 @@ class WechatMixin(object):
             options.mp_appsecret
         )
 
+    def parse_msg(self):
+        msg = {}
+        root = ET.fromstring(self.request.body)
+        for elem in root:
+            msg[elem.tag] = elem.text
+        return msg
+
+    def build_msg(self, msg):
+        root = ET.Element('xml')
+        for k in msg.keys():
+            subelem = ET.SubElement(root, k)
+            subelem.text = msg[k]
+        return ET.tostring(root, encoding="UTF-8")
 
 class IndexHandler(BaseHandler, WechatMixin):
     def prepare(self):
@@ -82,4 +98,14 @@ class IndexHandler(BaseHandler, WechatMixin):
 
     @tornado.gen.coroutine
     def post(self):
-        print(yield self.get_access_token())
+        recv_msg = self.parse_msg()
+        logging.debug(recv_msg)
+        resp_msg = {
+            "ToUserName": recv_msg["FromUserName"],
+            "FromUserName": recv_msg["ToUserName"],
+            "CreateTime": str(int(time.time())),
+            "MsgType": "text",
+            "Content": recv_msg["Content"]
+        }
+        self.set_header("Content-Type", "text/xml")
+        self.write(self.build_msg(resp_msg))
