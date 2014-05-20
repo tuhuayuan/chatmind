@@ -1,2 +1,5 @@
-微信公众平台项目
+=======
+chatmind
+========
 
+localmind clone on wechat 
