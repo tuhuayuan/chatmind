@@ -13,9 +13,6 @@ from tornado.options import define, options
 from tornado.httpclient import AsyncHTTPClient
 from StringIO import StringIO
 
-define("mp_token", default="", help="")
-define("mp_appid", default="", help="")
-define("mp_appsecret", default="", help="")
 
 
 class WechatMixin(object):
