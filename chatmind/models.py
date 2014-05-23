@@ -17,6 +17,15 @@ class User(BaseModel):
     name = Column(String(128), nullable=True)
 
 
+class Token(BaseModel):
+    __tablename__ = 'tokens'
+    __table_arg__ = {
+        "mysql_engine": "MyISAM"
+    }
+
+    tokenid = Column(String(512), primary_key=True)
+    expired = Column(Integer, default=0)
+
 def init_db(engine):
     BaseModel.metadata.create_all(engine)
 

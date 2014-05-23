@@ -14,11 +14,8 @@ setup(
     packages=['chatmind'],
     scripts=[],
     install_requires=[
-        "twisted",
-        "zope.interface",
-        "DBUtils",
-        "affinity",
-        "python-memcached",
+        "tornado",
+        "sqlalchemy",
         "MySQL-python"
     ],
     entry_points="""

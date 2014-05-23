@@ -6,103 +6,107 @@ import logging
 import tornado.web
 import tornado.gen
 import xml.etree.ElementTree as ET
-from app import BaseHandler
+from functools import wraps
 from datetime import datetime, timedelta
-from tornado.concurrent import return_future
-from tornado.options import define, options
 from tornado.httpclient import AsyncHTTPClient
+from tornado.util import ObjectDict
 from StringIO import StringIO
+from models import Token
 
 
+class WechatSDKMixin(object):
+    __appurl__ = "https://api.weixin.qq.com/cgi-bin/"
+    __tpl__ = dict(
+        base={'ToUserName': '', 'FromUserName': '', 'CreateTime': 0, 'MsgType': ''},
+    )
 
-class WechatMixin(object):
-    _access_token = ""
-    _access_token_expired = datetime.today()
-    _access_path = "https://api.weixin.qq.com/cgi-bin/"
+    def mp_config(self, token="", appid="", secret=""):
+        self.__apptoken__ = token
+        self.__appid__ = appid
+        self.__appsecret__ = secret
 
-    def check_signature(self):
-        signature = self.get_argument("signature")
-        lst = [
-            options.mp_token,
-            self.get_argument("timestamp"),
-            self.get_argument("nonce")
-        ]
-        lst.sort()
-        if hashlib.sha1("".join(lst)).hexdigest() == signature:
-            return True
-        else:
-            raise tornado.web.HTTPError(404)
+    def mp_check_signature(method):
+        """Decorate methods with this to check the request signature
+        signature = sha1(sort([token, timestamp, nonce]))
+        """
+        @wraps(method)
+        def wrapper(self, *args, **kwargs):
+            signature = self.get_argument("signature")
+            l = sorted([self.__apptoken__,
+                self.get_argument("timestamp"),
+                self.get_argument("nonce")])
+            if hashlib.sha1("".join(l)).hexdigest() == signature:
+                return method(self, *args, **kwargs)
+            else:
+                raise tornado.web.HTTPError(403)
+        return wrapper
 
-    @return_future
-    def get_access_token(self, callback):
-        future = callback
-        if WechatMixin._access_token == "" or \
-                WechatMixin._access_token_expired < datetime.now():
+    @tornado.gen.coroutine
+    def mp_get_token(self, cb=None):
+        """Coroutine methods, yield this to check api access token,
+        if exprired than fetch new token from server
+        @cb: use callback to get result
+        TODO: Save global token to memorydb(redis or memcached)
+        """
+        tk = self.dbsession.query(Token).with_for_update().first()
+        if tk.expired < datetime.now():
             http_client = AsyncHTTPClient()
-            cmd = WechatMixin._access_path + \
-                "token?grant_type=client_credential" + \
-                self._access_param
-            http_client.fetch(cmd, self.async_callback(
-                self._future_get_access_token, future
-                )
-            )
+            resp = yield http_client.fetch(self.mp_api_url +
+                    "token?grant_type=client_credential" +
+                    "&appid={0}&secret={1}".format(self.__appid__, self.__appsecret__))
+            if resp.code == 200:
+                msg = json.load(StringIO(resp.body))
+                tk.token = msg['access_token']
+                tk.expired = timedelta(msg['expires_in']) + datetime.now()
+                self.dbsession.commit()
+            else:
+                logging.warning("mp_access_token error code: %n", resp.code)
+        if cb is not None:
+            cb(tk.token)
         else:
-            future(WechatMixin._access_token)
+            raise tornado.gen.Return(tk.token)
 
-    def _future_get_access_token(self, future, response):
-        if response.code == 200:
-            body = json.load(StringIO(response.body))
-            WechatMixin._access_token = body['access_token']
-            WechatMixin._access_token_expired = timedelta(body['expires_in']) + datetime.now()
-            logging.debug("mp_access_token:  %s", WechatMixin._access_token)
-            future(WechatMixin._access_token)
-        else:
-            logging.warning("Fetch mp_access_token Error %n", response.code)
+    def mp_get_request(self):
+        """ Parse MP request msg from http request body in xml format
+        return: bool, an instance of ObjectDict
+        """
+        ok = True
+        msg = ObjectDict()
+        try:
+            root = ET.fromstring(self.request.body)
+            for elem in root:
+                msg[elem.tag] = elem.text
+        except ET.ParseError:
+            ok = False
+            logging.warning("mp request body not well formed")
+        return ok, msg
 
-    @property
-    def _access_param(self):
-        return "&appid={0}&secret={1}".format(
-            options.mp_appid,
-            options.mp_appsecret
-        )
-
-    def parse_msg(self):
-        msg = {}
-        root = ET.fromstring(self.request.body)
-        for elem in root:
-            msg[elem.tag] = elem.text
-        return msg
-
-    def build_msg(self, msg):
-        root = ET.Element('xml')
-        for k in msg.keys():
-            subelem = ET.SubElement(root, k)
-            subelem.text = msg[k]
-        return ET.tostring(root, encoding="UTF-8")
-
-class IndexHandler(BaseHandler, WechatMixin):
-    def prepare(self):
-        self.check_signature()
+    def mp_get_response(self, req=None, resp_type="text"):
+        """ Create a ObjectDict instance with given response type\
+        if type not support return plaint text type object
+        @req: build the instance for given request
+        @resp_type: response message type
+        return: an instance of ObjectDict
+        """
+        base = WechatSDKMixin.__tpl__['base']
+        tpl = WechatSDKMixin.__tpl__.get(resp_type)
+        if tpl is None:
+            base.update(tpl)
+        if req is not None:
+            base.FromUserName, base.ToUserName = req.ToUserName, req.FromUserName
+        base.CreateTime = int(time.timestamp())
 
     @tornado.gen.coroutine
-    def get(self):
-        # for mp developer auth
-        if "echostr" in self.request.query_arguments:
-            self.set_header("Content-Type", "text/plain")
-            self.write(self.get_argument("echostr"))
-        else:
-            pass
+    def mp_send(self, msg, cb=None):
+        """Coroutine method,first convert msg from ObjectDict to json string,
+        than send to mp server
+        @cb: use callback to get result
+        return: mp global error code
+        """
+        pass
 
-    @tornado.gen.coroutine
-    def post(self):
-        recv_msg = self.parse_msg()
-        logging.debug(recv_msg)
-        resp_msg = {
-            "ToUserName": recv_msg["FromUserName"],
-            "FromUserName": recv_msg["ToUserName"],
-            "CreateTime": str(int(time.time())),
-            "MsgType": "text",
-            "Content": recv_msg["Content"]
-        }
-        self.set_header("Content-Type", "text/xml")
-        self.write(self.build_msg(resp_msg))
+    def mp_respond(self, msg):
+        """Convert msg from ObjectDict to Xml string, than write into http
+        response
+        """
+        pass
