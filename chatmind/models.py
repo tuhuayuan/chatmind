@@ -1,5 +1,5 @@
 # -*- coding: UTF-8 -*-
-from sqlalchemy import Column, Integer, String
+from sqlalchemy import Column, Integer, String, Text
 from sqlalchemy.ext.declarative import declarative_base
 
 BaseModel = declarative_base()
@@ -7,7 +7,7 @@ BaseModel = declarative_base()
 
 class User(BaseModel):
     __tablename__ = 'users'
-    __table_arg__ = {
+    __table_args__ = {
         "mysql_engine": "MyISAM",
     }
 
@@ -19,16 +19,19 @@ class User(BaseModel):
 
 class Token(BaseModel):
     __tablename__ = 'tokens'
-    __table_arg__ = {
+    __table_args__ = {
         "mysql_engine": "MyISAM"
     }
 
-    tokenid = Column(String(512), primary_key=True)
+    id = Column(Integer, primary_key=True)
+    tokenid = Column(Text(512), default='')
     expired = Column(Integer, default=0)
 
-def init_db(engine):
-    BaseModel.metadata.create_all(engine)
-
-
-def drop_db(engine):
-    BaseModel.metadata.drop_all(engine)
+    @classmethod
+    def get_current_token(cls, session):
+        token = session.query(Token).order_by("id desc").first()
+        if token is None:
+            token = Token(tokenid='', expired=0)
+            session.add(token)
+            session.commit()
+        return token

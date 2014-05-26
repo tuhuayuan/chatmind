@@ -36,19 +36,20 @@ class Application(tornado.web.Application):
             template_path=os.path.join(os.path.dirname(__file__), "templates"),
             static_path=os.path.join(os.path.dirname(__file__), "static"),
             static_url="/public/",
-            xsrf_cookies=True,
+            xsrf_cookies=False,
             cookie_secret="wxb0b2ff9c2e34505d",
             # wechat sdk settings
-            wp_token=options.wp_token,
-            wp_appid=options.wp_appid,
-            wp_secret=options.wp_secret
+            mp_token=options.mp_token,
+            mp_appid=options.mp_appid,
+            mp_secret=options.mp_secret
         )
         tornado.web.Application.__init__(self, handlers, **settings)
         self.engine = create_engine(options.db_connect_string, echo=options.debug)
-        self.dbsession_maker = sessionmaker(bind=self.engine)
+        self.dbsession_maker = sessionmaker(bind=self.engine, autocommit=False,
+                                        autoflush=False)
         if options.db_rebuild:
-            models.drop_db(self.engine)
-        models.init_db(self.engine)
+            models.BaseModel.metadata.drop_all(bind=self.engine)
+        models.BaseModel.metadata.create_all(bind=self.engine)
 
 
 def main():

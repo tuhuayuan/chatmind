@@ -7,24 +7,25 @@ import tornado.web
 import tornado.gen
 import xml.etree.ElementTree as ET
 from functools import wraps
-from datetime import datetime, timedelta
 from tornado.httpclient import AsyncHTTPClient
 from tornado.util import ObjectDict
 from StringIO import StringIO
-from models import Token
 
 
 class WechatSDKMixin(object):
     __appurl__ = "https://api.weixin.qq.com/cgi-bin/"
     __tpl__ = dict(
-        base={'ToUserName': '', 'FromUserName': '', 'CreateTime': 0, 'MsgType': ''},
+        base=ObjectDict(ToUserName='', FromUserName='', CreateTime='', MsgType=''),
+        text=ObjectDict(Content='text'),
     )
 
-    def mp_config(self, token="", appid="", secret=""):
-        self.__apptoken__ = token
-        self.__appid__ = appid
-        self.__appsecret__ = secret
+    @classmethod
+    def mp_config(cls, token="", appid="", secret=""):
+        cls.__apptoken__ = token
+        cls.__appid__ = appid
+        cls.__appsecret__ = secret
 
+    @staticmethod
     def mp_check_signature(method):
         """Decorate methods with this to check the request signature
         signature = sha1(sort([token, timestamp, nonce]))
@@ -32,7 +33,7 @@ class WechatSDKMixin(object):
         @wraps(method)
         def wrapper(self, *args, **kwargs):
             signature = self.get_argument("signature")
-            l = sorted([self.__apptoken__,
+            l = sorted([WechatSDKMixin.__apptoken__,
                 self.get_argument("timestamp"),
                 self.get_argument("nonce")])
             if hashlib.sha1("".join(l)).hexdigest() == signature:
@@ -42,29 +43,26 @@ class WechatSDKMixin(object):
         return wrapper
 
     @tornado.gen.coroutine
-    def mp_get_token(self, cb=None):
+    def mp_get_token(self):
         """Coroutine methods, yield this to check api access token,
-        if exprired than fetch new token from server
         @cb: use callback to get result
         TODO: Save global token to memorydb(redis or memcached)
+        @return ObjectDict(tokenid, expired)
         """
-        tk = self.dbsession.query(Token).with_for_update().first()
-        if tk.expired < datetime.now():
-            http_client = AsyncHTTPClient()
-            resp = yield http_client.fetch(self.mp_api_url +
-                    "token?grant_type=client_credential" +
-                    "&appid={0}&secret={1}".format(self.__appid__, self.__appsecret__))
-            if resp.code == 200:
-                msg = json.load(StringIO(resp.body))
-                tk.token = msg['access_token']
-                tk.expired = timedelta(msg['expires_in']) + datetime.now()
-                self.dbsession.commit()
-            else:
-                logging.warning("mp_access_token error code: %n", resp.code)
-        if cb is not None:
-            cb(tk.token)
+        tk = ObjectDict(tokenid='', expired=0)
+        http_client = AsyncHTTPClient()
+        resp = yield http_client.fetch(WechatSDKMixin.__appurl__ +
+                "token?grant_type=client_credential" +
+                "&appid={0}&secret={1}".format(
+                    WechatSDKMixin.__appid__,
+                    WechatSDKMixin.__appsecret__))
+        if resp.code == 200:
+            msg = json.load(StringIO(resp.body))
+            tk.tokenid = msg['access_token']
+            tk.expired = int(time.time() + msg['expires_in'])
         else:
-            raise tornado.gen.Return(tk.token)
+            logging.warning("mp_access_token error code: %n", resp.code)
+        raise tornado.gen.Return(tk)
 
     def mp_get_request(self):
         """ Parse MP request msg from http request body in xml format
@@ -90,11 +88,13 @@ class WechatSDKMixin(object):
         """
         base = WechatSDKMixin.__tpl__['base']
         tpl = WechatSDKMixin.__tpl__.get(resp_type)
-        if tpl is None:
+        if tpl is not None:
             base.update(tpl)
         if req is not None:
             base.FromUserName, base.ToUserName = req.ToUserName, req.FromUserName
-        base.CreateTime = int(time.timestamp())
+        base.CreateTime = str(int(time.time()))
+        base.MsgType = resp_type
+        return base
 
     @tornado.gen.coroutine
     def mp_send(self, msg, cb=None):
@@ -109,4 +109,18 @@ class WechatSDKMixin(object):
         """Convert msg from ObjectDict to Xml string, than write into http
         response
         """
-        pass
+        r = ET.Element('xml')
+
+        def _build_node(parent, d):
+            for k, v in msg.items():
+                if isinstance(v, dict):
+                    _build_node(child, v)
+                elif isinstance(v, list):
+                    [_build_node(vv) for vv in v if isinstance(vv, dict)]
+                else:
+                    child = ET.SubElement(parent, k)
+                    child.text = v
+                    print(ET.tostring(child))
+        _build_node(r, msg)
+        self.set_header("Content-Type", "text/xml")
+        self.write(ET.tostring(r))

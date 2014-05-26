@@ -1,8 +1,10 @@
 # -*- coding: UTF-8 -*-
+import time
 import logging
 import tornado.web
 import tornado.gen
 from utils import WechatSDKMixin
+from models import User, Token, BaseModel
 
 
 class BaseHandler(tornado.web.RequestHandler):
@@ -19,19 +21,41 @@ class BaseHandler(tornado.web.RequestHandler):
 
 class WechatHandler(BaseHandler, WechatSDKMixin):
     def prepare(self):
-        self.wp_config(
-            token=self.settings.get("wp_token"),
-            appid=self.settings.get("wp_appid"),
-            secret=self.settings.get("wp_secret")
+        WechatSDKMixin.mp_config(
+            token=self.settings.get("mp_token"),
+            appid=self.settings.get("mp_appid"),
+            secret=self.settings.get("mp_secret")
         )
 
+    @WechatSDKMixin.mp_check_signature
     @tornado.gen.coroutine
     def get(self):
-        pass
+        self.write(self.get_argument('echostr'))
 
+    @WechatSDKMixin.mp_check_signature
     @tornado.gen.coroutine
     def post(self):
-        pass
+        ok, msg = self.mp_get_request()
+        if ok:
+            if msg.MsgType == 'event':
+                if msg.Event == 'subscribe':
+                    resp = self.mp_get_response(req=msg)
+                    resp.Content = 'hello world'
+                    self.mp_respond(resp)
+            elif msg.MsgType == 'text':
+                pass
+
+    @tornado.gen.coroutine
+    def get_access_token(self):
+        token = Token.get_current_token(self.dbsession)
+        if token.expired < int(time.time()):
+            self.dbsession.delete(token)
+            self.dbsession.flush()
+            fetched = yield self.mp_get_token()
+            token = Token(**fetched)
+            self.dbsession.add(token)
+            self.dbsession.commit()
+        raise tornado.gen.Return(token.tokenid)
 
 
 class YixinHandler(BaseHandler):
